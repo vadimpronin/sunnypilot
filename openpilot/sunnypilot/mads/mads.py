@@ -38,6 +38,7 @@ class ModularAssistiveDrivingSystem:
     self.no_main_cruise = False
     self.selfdrive = selfdrive
     self.selfdrive.enabled_prev = False
+    self.pending_lkas_enable = False
     self.state_machine = StateMachine(self)
     self.events = self.selfdrive.events
     self.events_sp = self.selfdrive.events_sp
@@ -115,6 +116,22 @@ class ModularAssistiveDrivingSystem:
     elif any(not ps.controlsAllowedLateral for ps in self.selfdrive.sm['pandaStates']
              if ps.safetyModel not in IGNORED_SAFETY_MODES):
       self.lateral_mismatch_counter += 1
+
+  def update_pending_lkas_enable(self):
+    # lkasEnable/lkasDisable can be generated before selfdrived is initialized, e.g. when ACC main is
+    # already on when the first carState arrives (VW MQB puts ACC into standby right after ignition)
+    # or when the LKAS button is pressed early. The state machine is not running yet and events are
+    # cleared every frame, so the request would be lost. Remember the last request (a disable cancels
+    # a pending enable) and replay it on the first frame after initialization.
+    if not self.selfdrive.initialized:
+      if self.events_sp.has(EventNameSP.lkasDisable):
+        self.pending_lkas_enable = False
+      elif self.events_sp.has(EventNameSP.lkasEnable):
+        self.pending_lkas_enable = True
+    elif self.pending_lkas_enable:
+      self.pending_lkas_enable = False
+      if not self.CP.passive and not self.events_sp.has(EventNameSP.lkasDisable):
+        self.events_sp.add(EventNameSP.lkasEnable)
 
   def update_events(self, CS: structs.CarState):
     if not self.selfdrive.enabled and self.enabled:
@@ -214,6 +231,8 @@ class ModularAssistiveDrivingSystem:
     self.data_sample()
 
     self.update_events(CS)
+
+    self.update_pending_lkas_enable()
 
     if not self.CP.passive and self.selfdrive.initialized:
       self.enabled, self.active = self.state_machine.update()
